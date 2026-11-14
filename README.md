@@ -7,18 +7,24 @@ journal frontend.
 ## Run locally
 
 1. Start MongoDB/backend from `../backend` after configuring `MONGODB_URI`.
-2. Set `ADMIN_AUTH_DISABLED=true` in the backend's local `.env` file and run
-   with `NODE_ENV=development`. This development-only option is rejected in
-   other environments.
+2. To use the sign-in screen locally, set `ADMIN_EMAIL`,
+   `ADMIN_PASSWORD_HASH`, and `SESSION_SECRET` in the backend's `.env`, and set
+   `ADMIN_AUTH_DISABLED=false`. Create a password hash with
+   `npm run hash-password` from the backend folder. Alternatively, the backend
+   can bypass login only for local development with
+   `NODE_ENV=development` and `ADMIN_AUTH_DISABLED=true`.
 3. Copy `.env.example` to `.env` and set `VITE_API_URL` if the API is not at
    `http://localhost:4000`.
 4. Run `npm install` and `npm run dev`; the admin UI is at
    `http://localhost:5174`.
 
 The public journal uses port `5173`; the admin app uses port `5174`. The
-backend's `CLIENT_ORIGINS` must include `http://localhost:5174`. Admin access
-is still protected by the backend outside this local development mode; an
-admin login flow is not included yet.
+backend's `CLIENT_ORIGINS` must include `http://localhost:5174`. The admin
+sign-in screen creates a secure backend session; post-management requests use
+that HttpOnly cookie. For production, configure the same admin credentials and
+session secret on the backend host, set `ADMIN_AUTH_DISABLED=false`, and add
+the exact deployed admin origin to `CLIENT_ORIGINS`. Both the admin and API
+must use HTTPS for production session cookies.
 
 For media uploads, configure `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`,
 and `CLOUDINARY_API_SECRET` in the backend environment. The API signs uploads;

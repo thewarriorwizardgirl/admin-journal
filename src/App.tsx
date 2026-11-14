@@ -13,6 +13,9 @@ import {
   Filter,
   LayoutDashboard,
   LoaderCircle,
+  LockKeyhole,
+  LogOut,
+  Mail,
   MoreHorizontal,
   Pencil,
   Search,
@@ -88,6 +91,11 @@ const emptyForm: PostForm = {
 
 type ApiError = Error & { status?: number };
 
+function isApiError(error: unknown): error is ApiError {
+  return error instanceof Error && "status" in error &&
+    typeof error.status === "number";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -111,11 +119,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // The API may return a non-JSON error page.
     }
-    const error = new Error(
-      response.status === 401
-        ? "Admin access is required. For local development, enable ADMIN_AUTH_DISABLED in the backend."
-        : message,
-    ) as ApiError;
+    if (response.status === 401 && path !== "/api/admin/session") {
+      window.dispatchEvent(new Event("admin-auth-required"));
+    }
+    const error = new Error(message) as ApiError;
     error.status = response.status;
     throw error;
   }
@@ -597,11 +604,100 @@ function PostEditor({
   );
 }
 
+function AdminLogin({
+  initialEmail,
+  onAuthenticated,
+}: {
+  initialEmail: string;
+  onAuthenticated: (email: string, posts: PostRecord[]) => void;
+}) {
+  const [email, setEmail] = useState(initialEmail);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      const session = await request<{ email: string }>("/api/admin/session", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      try {
+        const posts = await request<PostRecord[]>("/api/admin/posts");
+        onAuthenticated(session.email, posts);
+      } catch (requestError) {
+        if (isApiError(requestError) && requestError.status === 401) {
+          setError(
+            "The sign-in was accepted, but the browser did not keep the session cookie. Check the API cookie and cross-site settings.",
+          );
+        } else {
+          throw requestError;
+        }
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not sign in.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <section className="login-card">
+        <div className="login-brand brand-mark">W<span>.</span></div>
+        <span className="eyebrow">THE WARRIOR WIZARD GIRL</span>
+        <h1>Welcome back.</h1>
+        <p>Sign in to manage your journal.</p>
+        <form className="login-form" onSubmit={(event) => void submit(event)}>
+          <label>
+            <span>Email address</span>
+            <div className="login-input">
+              <Mail size={16} aria-hidden="true" />
+              <input
+                autoComplete="username"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+                autoFocus
+              />
+            </div>
+          </label>
+          <label>
+            <span>Password</span>
+            <div className="login-input">
+              <LockKeyhole size={16} aria-hidden="true" />
+              <input
+                autoComplete="current-password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+            </div>
+          </label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <button className="button button-primary login-submit" disabled={submitting}>
+            {submitting && <LoaderCircle className="spin" size={16} />}
+            {submitting ? "Signing in..." : "Sign in"}
+          </button>
+        </form>
+        <small>Your sign-in is securely verified by the journal backend.</small>
+      </section>
+    </main>
+  );
+}
+
 export default function App() {
   const [posts, setPosts] = useState<PostRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [authStatus, setAuthStatus] = useState<"checking" | "authenticated" | "unauthenticated">("checking");
+  const [adminEmail, setAdminEmail] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | PostStatus>("all");
   const [categoryFilter, setCategoryFilter] = useState("All categories");
@@ -615,8 +711,15 @@ export default function App() {
     setLoadError("");
     try {
       setPosts(await request<PostRecord[]>("/api/admin/posts"));
+      setAuthStatus("authenticated");
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Could not load posts.");
+      if (isApiError(error) && error.status === 401) {
+        setAuthStatus("unauthenticated");
+        setLoadError("");
+      } else {
+        setAuthStatus("authenticated");
+        setLoadError(error instanceof Error ? error.message : "Could not load posts.");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -625,6 +728,12 @@ export default function App() {
 
   useEffect(() => {
     void loadPosts();
+  }, []);
+
+  useEffect(() => {
+    const requireLogin = () => setAuthStatus("unauthenticated");
+    window.addEventListener("admin-auth-required", requireLogin);
+    return () => window.removeEventListener("admin-auth-required", requireLogin);
   }, []);
 
   useEffect(() => {
@@ -675,6 +784,38 @@ export default function App() {
     setToast(created ? "Post created" : "Changes saved");
   }
 
+  async function logOut() {
+    try {
+      const result = await request<{ authDisabled?: boolean }>(
+        "/api/admin/session",
+        { method: "DELETE" },
+      );
+      if (result?.authDisabled) {
+        setToast("Local development auth bypass is enabled; sign out is unavailable.");
+        return;
+      }
+      setPosts([]);
+      setAuthStatus("unauthenticated");
+      setToast("Signed out");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not sign out.");
+    }
+  }
+
+  if (authStatus === "unauthenticated") {
+    return (
+      <AdminLogin
+        initialEmail={adminEmail}
+        onAuthenticated={(email, loadedPosts) => {
+          setAdminEmail(email);
+          setPosts(loadedPosts);
+          setAuthStatus("authenticated");
+          setLoadError("");
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="rail">
@@ -702,7 +843,11 @@ export default function App() {
           </div>
           <div className="topbar-actions">
             <span className="api-indicator"><span /> API workspace</span>
-            <button className="avatar avatar-small" title="Journal admin">V</button>
+            {authStatus === "authenticated" && (
+              <button className="logout-button" onClick={() => void logOut()} title={`Sign out${adminEmail ? ` ${adminEmail}` : ""}`}>
+                <LogOut size={15} /> <span>Sign out</span>
+              </button>
+            )}
           </div>
         </header>
 
